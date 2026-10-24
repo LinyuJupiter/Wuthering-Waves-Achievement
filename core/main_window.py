@@ -435,11 +435,6 @@ class TemplateMainWindow(QMainWindow):
         """后台检查成就数据并自动合并"""
         from core.crawl_tab import AchievementCrawler, CrawlerThread
 
-        devcode, token = config.get_auth_data()
-        if not devcode or not token:
-            logger.info("认证信息未配置，跳过启动数据检查")
-            return
-
         self._sync_crawler = AchievementCrawler(target_version=None)
         self._sync_crawler.progress.connect(
             lambda msg: logger.info("%s", msg)
@@ -455,9 +450,7 @@ class TemplateMainWindow(QMainWindow):
 
     def _sync_crawl(self):
         """获取远端全量数据，解析所有成就（不筛选版本），与本地对比合并"""
-        import re
         try:
-            self._sync_crawler._load_auth_config()
             self._sync_crawler.progress.emit("正在检查成就数据更新...")
             api_data = self._sync_crawler.get_achievement_data()
             if not api_data:
@@ -481,37 +474,21 @@ class TemplateMainWindow(QMainWindow):
             local_achievements = config.load_base_achievements()
             logger.info("本地共 %s 条成就", len(local_achievements))
 
-            # 用 (名称, 清理后描述) 去重
-            def clean_desc(desc):
-                if not desc:
-                    return desc
-                return re.sub(r'[.,…。，；：！？、]+$', '', desc).strip()
-
+            from core.config import achievement_match_keys, clean_achievement_desc
             local_keys = set()
             for a in local_achievements:
-                key = (a.get('名称', ''), clean_desc(a.get('描述', '')))
-                local_keys.add(key)
+                local_keys.update(achievement_match_keys(a))
+            suppressed = config.suppressed_key_set()
 
-            remote_keys = set()
             to_add = []
             for a in all_remote:
-                key = (a.get('名称', ''), clean_desc(a.get('描述', '')))
-                remote_keys.add(key)
-                if key not in local_keys:
-                    to_add.append(a)
+                key = (a.get('名称', ''), clean_achievement_desc(a.get('描述', '')))
+                if key in local_keys or key in suppressed:
+                    continue
+                to_add.append(a)
 
-            # 检测本地有但远端已移除的成就
-            to_remove_keys = local_keys - remote_keys
-            if to_remove_keys:
-                removed_names = [name for name, _ in to_remove_keys]
-                logger.info("发现 %s 条成就已从远端移除: %s", len(to_remove_keys), ', '.join(removed_names))
-
-            # 保存远端 keys 供主线程使用
-            self._sync_remote_keys = remote_keys
-
-            if not to_add and not to_remove_keys:
+            if not to_add:
                 logger.info("本地数据已是最新，无需同步")
-                self._sync_remote_keys = None
                 self._sync_crawler.finished.emit([])
                 return
 
@@ -531,13 +508,8 @@ class TemplateMainWindow(QMainWindow):
             self._sync_crawler.error.emit(str(e))
 
     def _on_sync_finished(self, new_achievements):
-        """同步完成，在主线程中合并新成就到成就库"""
-        import re
-
-        remote_keys = getattr(self, '_sync_remote_keys', None)
-        has_changes = bool(new_achievements) or bool(remote_keys)
-
-        if not has_changes:
+        """同步完成，在主线程中合并新成就到成就库。只补充，不删除本地条目。"""
+        if not new_achievements:
             logger.info("启动数据检查完成，无新数据")
             self._sync_crawler = None
             self._sync_thread = None
@@ -590,23 +562,6 @@ class TemplateMainWindow(QMainWindow):
             })
             logger.info("分类配置已更新")
 
-        # 移除远端已删除的成就
-        removed_count = 0
-        if remote_keys:
-            def clean_desc(desc):
-                if not desc:
-                    return desc
-                return re.sub(r'[.,…。，；：！？、]+$', '', desc).strip()
-
-            before_count = len(current_achievements)
-            current_achievements = [
-                a for a in current_achievements
-                if (a.get('名称', ''), clean_desc(a.get('描述', ''))) in remote_keys
-            ]
-            removed_count = before_count - len(current_achievements)
-            if removed_count:
-                logger.info("已移除 %s 条远端已删除的成就", removed_count)
-
         # 合并新增成就并重新编码
         all_achievements = current_achievements + new_achievements
         all_achievements, _ = manage_tab._smart_reencode_achievements(all_achievements)
@@ -637,14 +592,11 @@ class TemplateMainWindow(QMainWindow):
                 version_counts[v] = version_counts.get(v, 0) + 1
             version_summary = ", ".join(f"v{v}: {c}条" for v, c in sorted(version_counts.items()))
             summary_parts.append(f"新增 {len(new_achievements)} 条（{version_summary}）")
-        if removed_count:
-            summary_parts.append(f"移除 {removed_count} 条")
         logger.info("同步完成！%s，总计 %s 条", ', '.join(summary_parts), len(all_achievements))
 
         # 清理引用
         self._sync_crawler = None
         self._sync_thread = None
-        self._sync_remote_keys = None
 
     def on_update_available(self, update_info):
         """处理可用更新"""
@@ -724,9 +676,8 @@ class TemplateMainWindow(QMainWindow):
         info_text.setText("""
         <p><b>📖 快速入门指南：</b></p>
         <p style='margin-left: 20px;'>1. <b>添加用户</b>：首先需要在设置中添加您的游戏昵称和uid</p>
-        <p style='margin-left: 20px;'>2. <b>设置认证信息</b>：在设置-用户管理-通用认证设置查看如何设置</p>
-        <p style='margin-left: 20px;'>3. <b>数据爬取</b>：输入版本号爬取对应版本的成就数据</p>
-        <p style='margin-left: 20px;'>4. <b>管理成就</b>：在成就管理中查看和标记您的成就进度</p>
+        <p style='margin-left: 20px;'>2. <b>数据爬取</b>：输入版本号即可爬取，无需登录 Wiki</p>
+        <p style='margin-left: 20px;'>3. <b>管理成就</b>：在成就管理中查看和标记进度，右键可编辑或删除单条成就</p>
         
         <p><b>💡 使用提示：</b></p>
         <p style='margin-left: 20px;'>• 点击左上角头像可以切换角色形象</p>

@@ -1,8 +1,8 @@
 ﻿import os
 import logging
 
-from PySide6.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QLabel,
-                               QScrollArea, QGridLayout, QFrame)
+from PySide6.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel,
+                               QScrollArea, QGridLayout, QFrame, QPushButton)
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QPixmap, QPainter, QMouseEvent, QPainterPath
 
@@ -12,7 +12,7 @@ from core.signal_bus import signal_bus
 logger = logging.getLogger(__name__)
 from core.widgets import BackgroundWidget, load_background_image
 from core.custom_title_bar import CustomTitleBar
-from core.styles import get_dialog_style, get_scroll_area_style, get_label_style
+from core.styles import get_dialog_style, get_scroll_area_style, get_label_style, get_button_style
 
 
 class AvatarItem(QWidget):
@@ -138,7 +138,7 @@ class AvatarSelector(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
         # 调整窗口尺寸以完整显示6个头像
-        self.setFixedSize(750, 450)
+        self.setFixedSize(750, 500)
         
         # 设置样式
         self.setStyleSheet(get_dialog_style(config.theme))
@@ -163,11 +163,20 @@ class AvatarSelector(QMainWindow):
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(15)
+        content_layout.setSpacing(10)
         main_layout.addWidget(content_widget)
-        
-        
-        
+
+        sync_row = QHBoxLayout()
+        self.sync_btn = QPushButton("同步角色形象")
+        self.sync_btn.setStyleSheet(get_button_style(config.theme))
+        self.sync_btn.clicked.connect(self.start_asset_sync)
+        sync_row.addWidget(self.sync_btn)
+        self.sync_status = QLabel("从 Wiki 下载头像和立绘，已有图片不会覆盖")
+        self.sync_status.setWordWrap(True)
+        self.sync_status.setStyleSheet(get_label_style(config.theme))
+        sync_row.addWidget(self.sync_status, 1)
+        content_layout.addLayout(sync_row)
+
         # 滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -189,28 +198,21 @@ class AvatarSelector(QMainWindow):
     
     def load_avatars(self):
         """加载所有头像"""
-        # 获取头像目录
         profiles_dir = get_resource_path("resources/profile")
-        
-        if not profiles_dir.exists():
-            logger.warning("头像目录不存在: %s", profiles_dir)
-            # 创建默认测试头像
-            self.create_test_avatars()
-            return
-        
-        # 获取所有PNG文件
-        png_files = list(profiles_dir.glob("*.png"))
-        
-        if not png_files:
-            logger.warning("没有找到PNG头像文件")
-            self.create_test_avatars()
-            return
-        
-        # 清空现有布局
+        png_files = sorted(profiles_dir.glob("*.png")) if profiles_dir.exists() else []
+
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+
+        if not png_files:
+            logger.warning("没有找到PNG头像文件")
+            hint = QLabel("还没有角色形象。点击「同步角色形象」从 Wiki 下载。")
+            hint.setWordWrap(True)
+            hint.setStyleSheet(get_label_style(config.theme))
+            self.grid_layout.addWidget(hint, 0, 0, 1, 6)
+            return
         
         # 每行显示的头像数量
         columns = 6
@@ -229,10 +231,39 @@ class AvatarSelector(QMainWindow):
             
             self.grid_layout.addWidget(avatar_item, row, col)
     
-    def create_test_avatars(self):
-        """创建测试头像（用于演示）"""
-        # 这里可以添加一些测试逻辑，或者显示提示信息
-        pass
+    def start_asset_sync(self):
+        """从 Wiki 下载缺失的头像和立绘。"""
+        if getattr(self, "_syncing", False):
+            return
+        from core.character_assets import start_character_asset_sync
+        self._syncing = True
+        self.sync_btn.setEnabled(False)
+        self.sync_status.setText("正在连接 Wiki...")
+        start_character_asset_sync(
+            self.sync_status.setText,
+            self._on_asset_sync_finished,
+            self._on_asset_sync_failed,
+        )
+
+    def _on_asset_sync_finished(self, summary):
+        try:
+            self._syncing = False
+            self.sync_btn.setEnabled(True)
+            self.sync_status.setText(
+                f"新头像 {summary['avatars']}，新立绘 {summary['portraits']}，"
+                f"已存在跳过 {summary['skipped']}，失败 {summary['failed']}"
+            )
+            self.load_avatars()
+        except RuntimeError:
+            return
+
+    def _on_asset_sync_failed(self, message):
+        try:
+            self._syncing = False
+            self.sync_btn.setEnabled(True)
+            self.sync_status.setText(f"同步失败：{message}")
+        except RuntimeError:
+            return
     
 
     
@@ -246,6 +277,8 @@ class AvatarSelector(QMainWindow):
         central = self.centralWidget()
         if isinstance(central, BackgroundWidget):
             central.set_background(self.background_pixmap, config.theme)
+        self.sync_btn.setStyleSheet(get_button_style(config.theme))
+        self.sync_status.setStyleSheet(get_label_style(config.theme))
         # 刷新头像样式
         self.refresh_avatar_styles()
     
@@ -272,6 +305,8 @@ class AvatarSelector(QMainWindow):
         central = self.centralWidget()
         if isinstance(central, BackgroundWidget):
             central.set_background(self.background_pixmap, theme)
+        self.sync_btn.setStyleSheet(get_button_style(theme))
+        self.sync_status.setStyleSheet(get_label_style(theme))
         # 刷新头像样式
         self.refresh_avatar_styles()
     

@@ -1,4 +1,63 @@
-﻿import sys
+﻿import ctypes
+import os
+import subprocess
+import sys
+
+
+def _is_admin():
+    """当前进程是否已经拿到管理员权限。"""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _is_compiled():
+    """Nuitka 打包后的可执行文件。"""
+    return "__compiled__" in globals() or getattr(sys, "frozen", False)
+
+
+def ensure_admin():
+    """截图和 OCR 需要管理员权限。未提权时重新启动自身并退出当前进程。"""
+    if sys.platform != "win32" or _is_admin():
+        return
+
+    if _is_compiled():
+        executable = sys.executable
+        params = subprocess.list2cmdline(sys.argv[1:])
+    else:
+        executable = sys.executable
+        pythonw = os.path.join(os.path.dirname(executable), "pythonw.exe")
+        if os.path.basename(executable).lower() == "python.exe" and os.path.isfile(pythonw):
+            executable = pythonw
+        params = subprocess.list2cmdline(sys.argv)
+
+    shell32 = ctypes.windll.shell32
+    shell32.ShellExecuteW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_int,
+    ]
+    shell32.ShellExecuteW.restype = ctypes.c_void_p
+    result = shell32.ShellExecuteW(
+        None, "runas", executable, params or None, os.getcwd(), 1
+    )
+    if not result or result <= 32:
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "未获得管理员权限，无法截图识别游戏界面。",
+            "鸣潮成就管理器",
+            0x10,
+        )
+    raise SystemExit(0)
+
+
+if __name__ == "__main__":
+    ensure_admin()
+
 import logging
 
 from PySide6.QtWidgets import QApplication
@@ -33,6 +92,8 @@ def setup_application():
 def main():
     """主函数"""
     try:
+        if sys.platform == "win32":
+            logger.info("已使用管理员权限启动")
         logger.info("正在创建应用实例...")
         # 创建应用实例
         app = setup_application()

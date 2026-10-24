@@ -1,7 +1,8 @@
 ﻿"""成就表格组件"""
 import logging
 
-from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QComboBox, QStyledItemDelegate
+from PySide6.QtWidgets import (QTableWidget, QTableWidgetItem, QComboBox, QStyledItemDelegate,
+                               QMenu)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from core.styles import BaseStyles
@@ -418,6 +419,22 @@ class AchievementTable(QTableWidget):
                 parent.save_to_json()
         except Exception as e:
             logger.error("保存数据失败: %s", e)
+
+    def contextMenuEvent(self, event):
+        """右键编辑或删除当前成就。"""
+        item = self.itemAt(event.pos())
+        if not item:
+            return
+        row = item.row()
+        menu = QMenu(self)
+        edit_action = menu.addAction("编辑")
+        delete_action = menu.addAction("删除")
+        selected = menu.exec(event.globalPos())
+        parent = self.parent()
+        if selected == edit_action and hasattr(parent, "edit_achievement"):
+            parent.edit_achievement(row)
+        elif selected == delete_action and hasattr(parent, "delete_achievement"):
+            parent.delete_achievement(row)
 
     def mousePressEvent(self, event):
         """重写鼠标点击事件，处理分类列的单击编辑"""

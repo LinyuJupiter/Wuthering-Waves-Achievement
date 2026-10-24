@@ -1,5 +1,5 @@
 ﻿from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-                               QComboBox, QGroupBox, QFileDialog, QApplication, QCheckBox)
+                               QComboBox, QGroupBox, QFileDialog, QApplication, QCheckBox, QDialog)
 from PySide6.QtCore import Qt
 import logging
 import os
@@ -7,7 +7,7 @@ import json
 
 logger = logging.getLogger(__name__)
 
-from core.config import config, get_resource_path
+from core.config import config, get_resource_path, clean_achievement_desc, achievement_match_keys
 from core.styles import get_font_gray_style, get_button_style
 
 # 导入爬虫相关的类
@@ -184,6 +184,142 @@ class AchievementManager:
         }
 
 
+class AchievementEditDialog(QDialog):
+    """新增或编辑单条成就。"""
+
+    def __init__(self, achievement=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("编辑成就" if achievement else "新增成就")
+        self.setModal(True)
+        self.setMinimumWidth(480)
+        self._result = None
+
+        from core.styles import BaseStyles, get_text_input_style, get_label_style, get_button_style
+        if config.theme == "dark":
+            self.setStyleSheet("QDialog { background-color: #2b2b2b; color: #eeeeee; }")
+        else:
+            self.setStyleSheet("QDialog { background-color: #f8f9fa; color: #222222; }")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+
+        self.name_edit = QLineEdit()
+        self.desc_edit = QLineEdit()
+        self.reward_edit = QLineEdit()
+        self.version_edit = QLineEdit()
+        self.version_edit.setPlaceholderText("例如 3.0")
+        self.hidden_check = QCheckBox("隐藏成就")
+        self.first_combo = QComboBox()
+        self.second_combo = QComboBox()
+        self.first_combo.setStyleSheet(BaseStyles.get_combobox_style(config.theme))
+        self.second_combo.setStyleSheet(BaseStyles.get_combobox_style(config.theme))
+
+        category_config = config.load_category_config()
+        self._second_categories = category_config.get("second_categories", {})
+        first_categories = category_config.get("first_categories", {})
+        ordered_first = [name for name, _order in sorted(first_categories.items(), key=lambda item: item[1])]
+        self.first_combo.addItems(ordered_first)
+        self.first_combo.currentTextChanged.connect(self._reload_second_categories)
+
+        input_style = get_text_input_style(config.theme)
+        for editor in (self.name_edit, self.desc_edit, self.reward_edit, self.version_edit):
+            editor.setStyleSheet(input_style)
+
+        if achievement:
+            self.name_edit.setText(achievement.get("原始名称") or achievement.get("名称", ""))
+            self.desc_edit.setText(achievement.get("描述", ""))
+            self.reward_edit.setText(achievement.get("奖励", ""))
+            self.version_edit.setText(achievement.get("版本", ""))
+            self.hidden_check.setChecked(achievement.get("是否隐藏") == "隐藏")
+            first_name = achievement.get("第一分类", "")
+            first_index = self.first_combo.findText(first_name)
+            if first_index >= 0:
+                self.first_combo.setCurrentIndex(first_index)
+        self._reload_second_categories(self.first_combo.currentText())
+        if achievement:
+            second_index = self.second_combo.findText(achievement.get("第二分类", ""))
+            if second_index >= 0:
+                self.second_combo.setCurrentIndex(second_index)
+
+        label_style = get_label_style(config.theme)
+
+        def add_row(label_text, widget):
+            row = QHBoxLayout()
+            label = QLabel(label_text)
+            label.setFixedWidth(72)
+            label.setStyleSheet(label_style)
+            row.addWidget(label)
+            row.addWidget(widget)
+            layout.addLayout(row)
+
+        add_row("名称", self.name_edit)
+        add_row("描述", self.desc_edit)
+        add_row("奖励", self.reward_edit)
+        add_row("版本", self.version_edit)
+        add_row("第一分类", self.first_combo)
+        add_row("第二分类", self.second_combo)
+        layout.addWidget(self.hidden_check)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        ok_btn = QPushButton("确定")
+        cancel_btn = QPushButton("取消")
+        ok_btn.setStyleSheet(get_button_style(config.theme))
+        cancel_btn.setStyleSheet(get_button_style(config.theme))
+        ok_btn.clicked.connect(self._accept_edit)
+        cancel_btn.clicked.connect(self.reject)
+        buttons.addWidget(ok_btn)
+        buttons.addWidget(cancel_btn)
+        layout.addLayout(buttons)
+
+    def _reload_second_categories(self, first_name):
+        current = self.second_combo.currentText()
+        self.second_combo.blockSignals(True)
+        self.second_combo.clear()
+        mapping = self._second_categories.get(first_name, {})
+
+        def sort_key(item):
+            try:
+                return int(item[1])
+            except (TypeError, ValueError):
+                return 999
+
+        ordered = [name for name, _suffix in sorted(mapping.items(), key=sort_key)]
+        self.second_combo.addItems(ordered)
+        index = self.second_combo.findText(current)
+        if index >= 0:
+            self.second_combo.setCurrentIndex(index)
+        self.second_combo.blockSignals(False)
+
+    def _accept_edit(self):
+        name = self.name_edit.text().strip()
+        if not name:
+            from core.custom_message_box import CustomMessageBox
+            CustomMessageBox.information(self, "提示", "请填写成就名称")
+            return
+        if not self.first_combo.currentText() or not self.second_combo.currentText():
+            from core.custom_message_box import CustomMessageBox
+            CustomMessageBox.information(self, "提示", "请选择第一分类和第二分类")
+            return
+        version = self.version_edit.text().strip()
+        if version.isdigit():
+            version = f"{version}.0"
+        self._result = {
+            "名称": name,
+            "描述": self.desc_edit.text().strip(),
+            "奖励": self.reward_edit.text().strip(),
+            "版本": version,
+            "是否隐藏": "隐藏" if self.hidden_check.isChecked() else "",
+            "第一分类": self.first_combo.currentText(),
+            "第二分类": self.second_combo.currentText(),
+        }
+        self.accept()
+
+    def get_data(self):
+        return self._result
+
+
 class ManageTab(QWidget):
     """成就管理标签页"""
 
@@ -215,6 +351,7 @@ class ManageTab(QWidget):
         self.export_json_btn.setStyleSheet(get_button_style(theme))
         self.settings_btn.setStyleSheet(get_button_style(theme))
         self.help_btn.setStyleSheet(get_button_style(theme))
+        self.add_achievement_btn.setStyleSheet(get_button_style(theme))
 
     def init_ui(self):
         """初始化UI"""
@@ -372,6 +509,12 @@ class ManageTab(QWidget):
         self.settings_btn.clicked.connect(self.open_settings)
         self.settings_btn.setFixedWidth(80)
         first_row.addWidget(self.settings_btn)
+
+        self.add_achievement_btn = QPushButton("新增成就")
+        self.add_achievement_btn.setStyleSheet(get_button_style(config.theme))
+        self.add_achievement_btn.clicked.connect(self.add_achievement)
+        self.add_achievement_btn.setFixedWidth(80)
+        first_row.addWidget(self.add_achievement_btn)
         first_row.addStretch()
 
         button_layout.addLayout(first_row)
@@ -628,8 +771,137 @@ class ManageTab(QWidget):
     def open_settings(self):
         """打开设置对话框"""
         from core.settings_dialog import TemplateSettingsDialog
-        dialog = TemplateSettingsDialog(self)
+        dialog = TemplateSettingsDialog(self.window())
         dialog.show()
+
+    def add_achievement(self):
+        """新增一条本地成就，不改动其他成就的编号。"""
+        dialog = AchievementEditDialog(parent=self.window())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dialog.get_data()
+        if not data:
+            return
+        achievement = {
+            "绝对编号": str(self._next_absolute_id()),
+            "编号": self._allocate_achievement_id(data["第一分类"], data["第二分类"]),
+            "名称": data["名称"],
+            "描述": data["描述"],
+            "奖励": data["奖励"],
+            "版本": data["版本"],
+            "是否隐藏": data["是否隐藏"],
+            "第一分类": data["第一分类"],
+            "第二分类": data["第二分类"],
+            "来源": "自定义",
+            "获取状态": "未完成",
+        }
+        self.manager.achievements.append(achievement)
+        self.save_to_json()
+        self.update_filters()
+        self.filter_data()
+        show_notification(self, f"已新增成就：{data['名称']}")
+
+    def edit_achievement(self, row):
+        """编辑表格当前行。编号保持不变，便于保留完成进度。"""
+        achievements = getattr(self.manager_table, "achievements", [])
+        if row < 0 or row >= len(achievements):
+            return
+        achievement = achievements[row]
+        dialog = AchievementEditDialog(achievement, parent=self.window())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dialog.get_data()
+        if not data:
+            return
+
+        real_name = achievement.get("原始名称") or achievement.get("名称", "")
+        old_key = (real_name, clean_achievement_desc(achievement.get("描述", "")))
+        new_key = (data["名称"], clean_achievement_desc(data["描述"]))
+        if achievement.get("来源") != "自定义" and old_key != new_key and not achievement.get("同步键"):
+            achievement["同步键"] = [old_key[0], old_key[1]]
+
+        achievement["名称"] = data["名称"]
+        if "原始名称" in achievement:
+            achievement["原始名称"] = data["名称"]
+        achievement["描述"] = data["描述"]
+        achievement["奖励"] = data["奖励"]
+        achievement["版本"] = data["版本"]
+        achievement["是否隐藏"] = data["是否隐藏"]
+        achievement["第一分类"] = data["第一分类"]
+        achievement["第二分类"] = data["第二分类"]
+        self.save_to_json()
+        self.update_filters()
+        self.filter_data()
+        show_notification(self, f"已保存：{data['名称']}")
+
+    def delete_achievement(self, row):
+        """删除表格当前行，并阻止 Wiki 同步把同一条加回来。"""
+        achievements = getattr(self.manager_table, "achievements", [])
+        if row < 0 or row >= len(achievements):
+            return
+        achievement = achievements[row]
+        name = achievement.get("原始名称") or achievement.get("名称", "")
+        from core.custom_message_box import CustomMessageBox
+        reply = CustomMessageBox.question(
+            self.window(),
+            "确认删除",
+            f"确定删除成就「{name}」吗？该条的完成状态也会从所有用户进度中移除。",
+            ("确定", "取消"),
+        )
+        if reply != CustomMessageBox.Yes:
+            return
+
+        if achievement.get("来源") != "自定义":
+            config.suppress_achievement_keys(achievement_match_keys(achievement))
+
+        achievement_id = achievement.get("编号", "")
+        if achievement_id:
+            for other in self.manager.achievements:
+                mutex = other.get("互斥成就") or []
+                if achievement_id in mutex:
+                    other["互斥成就"] = [item for item in mutex if item != achievement_id]
+        self.manager.achievements = [
+            item for item in self.manager.achievements if item is not achievement
+        ]
+        config.remove_achievement_from_all_progress(achievement_id)
+        self.save_to_json()
+        self.update_filters()
+        self.filter_data()
+        show_notification(self, f"已删除：{name}")
+
+    def _next_absolute_id(self):
+        max_id = 0
+        for achievement in self.manager.achievements:
+            try:
+                max_id = max(max_id, int(achievement.get("绝对编号") or 0))
+            except (TypeError, ValueError):
+                continue
+        return max_id + 1
+
+    def _allocate_achievement_id(self, first_cat, second_cat):
+        """在该分类现有编号后追加，避免重排其他成就。"""
+        category_config = config.load_category_config()
+        first_categories = category_config.get("first_categories", {})
+        second_categories = category_config.get("second_categories", {})
+        first_order = first_categories.get(first_cat, 1)
+        suffix = second_categories.get(first_cat, {}).get(second_cat, "10")
+        try:
+            suffix_padded = f"{int(suffix):03d}"
+        except (TypeError, ValueError):
+            suffix_padded = "010"
+        try:
+            prefix = f"{int(first_order)}{suffix_padded}"
+        except (TypeError, ValueError):
+            prefix = f"9{suffix_padded}"
+        max_seq = 0
+        for achievement in self.manager.achievements:
+            number = str(achievement.get("编号", ""))
+            if number.startswith(prefix) and len(number) >= len(prefix) + 4:
+                try:
+                    max_seq = max(max_seq, int(number[-4:]))
+                except ValueError:
+                    continue
+        return f"{prefix}{max_seq + 1:04d}"
 
     def open_help(self):
         """打开帮助对话框"""

@@ -30,9 +30,7 @@ class AchievementCrawler(QObject):
     def __init__(self, target_version=None):
         super().__init__()
         self.target_version = target_version
-        self.devcode = ""
-        self.token = ""
-        
+
         # 从配置文件加载分类配置
         self.category_config = config.load_category_config()
         self.first_categories = self.category_config.get("first_categories", {})
@@ -44,14 +42,8 @@ class AchievementCrawler(QObject):
             for second_cat in second_cats:
                 self.first_category_map[second_cat] = first_cat
     
-    def _load_auth_config(self):
-        """从配置中加载认证信息"""
-        self.devcode, self.token = config.get_auth_data()
-
     def crawl(self):
         try:
-            # 加载认证信息
-            self._load_auth_config()
             self.progress.emit("正在获取成就数据...")
             data = self.get_achievement_data()
             if data:
@@ -115,8 +107,6 @@ class AchievementCrawler(QObject):
             'Origin': 'https://wiki.kurobbs.com',
             'Referer': 'https://wiki.kurobbs.com/',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'devcode': self.devcode,
-            'token': self.token,
             'wiki_type': '9'
         }
         data = {'id': '1220879855033786368'}
@@ -128,15 +118,6 @@ class AchievementCrawler(QObject):
         from core.config import get_resource_path
 
         cache_file = get_resource_path("resources") / "achievement_cache.json"
-
-        # 认证信息缺失时的降级处理
-        if not self.devcode or not self.token:
-            cache_meta, cached_data = self._read_cache_meta(cache_file)
-            if cached_data:
-                self.progress.emit("认证信息未配置，使用本地缓存")
-                logger.info("认证信息缺失，使用本地缓存")
-                return cached_data
-            raise Exception("请先在设置中配置认证信息")
 
         # 读取本地缓存元数据
         cache_meta, cached_data = self._read_cache_meta(cache_file)
@@ -603,14 +584,7 @@ class CrawlTab(QWidget):
         data_dir.mkdir(exist_ok=True)
         self.data_file = str(data_dir / "wuthering_waves_achievements.json")
         self.init_ui()
-        
-        # 配置信息
-        # 从配置中读取认证信息
-        self._load_auth_config()
-        
-        # 监听配置变化信号
-        signal_bus.settings_changed.connect(self._on_settings_changed)
-        
+
         # 监听主题切换信号
         signal_bus.theme_changed.connect(self._on_theme_changed)
         
@@ -646,7 +620,7 @@ class CrawlTab(QWidget):
         self.crawl_btn.setMaximumWidth(100)
         control_layout.addWidget(self.crawl_btn)
         
-        self.merge_btn = QPushButton("确认覆盖")
+        self.merge_btn = QPushButton("确认添加")
         self.merge_btn.setStyleSheet(get_button_style(config.theme))
         self.merge_btn.clicked.connect(self.merge_to_manage)
         self.merge_btn.setEnabled(False)
@@ -713,16 +687,6 @@ class CrawlTab(QWidget):
         # 初始日志
         logger.info("数据爬取标签页已初始化")
     
-    def _load_auth_config(self):
-        """从配置中加载认证信息"""
-        self.devcode, self.token = config.get_auth_data()
-    
-    def _on_settings_changed(self, settings_data):
-        """配置变化时的处理"""
-        if 'devcode' in settings_data or 'token' in settings_data:
-            self._load_auth_config()
-            logger.info("认证配置已更新")
-    
     def _on_theme_changed(self, theme):
         """主题切换时更新样式"""
         # 更新按钮样式
@@ -765,13 +729,7 @@ class CrawlTab(QWidget):
             return
         
         self.crawl_btn.setEnabled(False)
-        
-        # 检查认证信息是否完整
-        if not self.devcode or not self.token:
-            self.crawl_btn.setEnabled(True)
-            self.show_notification("请先在设置中配置认证信息")
-            return
-        
+
         # 创建爬虫对象和线程
         crawler = AchievementCrawler(target_version)
         crawler.progress.connect(self.update_progress)
@@ -904,33 +862,18 @@ class CrawlTab(QWidget):
         
         current_achievements = manage_tab.manager.achievements
         
-        # 创建名称+描述的组合键，用于精确判断重复
-        # 去掉描述末尾符号后再比较
-        import re
-        def clean_description(desc):
-            """去掉描述末尾的标点符号"""
-            if not desc:
-                return desc
-            # 去掉末尾的标点符号：。，；：！？、
-            return re.sub(r'[.,…。，；：！？、]+$', '', desc).strip()
-        
+        from core.config import achievement_match_keys, clean_achievement_desc
+
         current_achievements_keys = set()
         for a in current_achievements:
-            name = a.get('名称', '')
-            desc = clean_description(a.get('描述', ''))
-            key = (name, desc)  # 使用元组作为组合键
-            current_achievements_keys.add(key)
-        
-        # 仅筛选出不存在的成就进行添加
-        to_add = []     # 需要新增的成就
-        
+            current_achievements_keys.update(achievement_match_keys(a))
+        current_achievements_keys.update(config.suppressed_key_set())
+
+        # 仅筛选出不存在、且未被用户删除过的成就
+        to_add = []
         for achievement in self.achievements:
-            name = achievement.get('名称', '')
-            desc = clean_description(achievement.get('描述', ''))
-            key = (name, desc)
-            
+            key = (achievement.get('名称', ''), clean_achievement_desc(achievement.get('描述', '')))
             if key not in current_achievements_keys:
-                # 新成就（名称+描述组合不存在）
                 to_add.append(achievement)
         
         if not to_add:

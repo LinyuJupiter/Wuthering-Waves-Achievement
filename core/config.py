@@ -3,9 +3,29 @@ import sys
 import os
 import logging
 import configparser
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_TRAILING_PUNCT = re.compile(r'[.,…。，；：！？、]+$')
+
+
+def clean_achievement_desc(desc):
+    """去掉描述末尾标点，供 Wiki 去重使用。"""
+    if not desc:
+        return ""
+    return _TRAILING_PUNCT.sub("", str(desc)).strip()
+
+
+def achievement_match_keys(achievement):
+    """本地成就对应的 Wiki 匹配键，包含编辑前记下的同步键。"""
+    name = achievement.get("原始名称") or achievement.get("名称", "")
+    keys = {(name, clean_achievement_desc(achievement.get("描述", "")))}
+    stored = achievement.get("同步键")
+    if isinstance(stored, (list, tuple)) and len(stored) == 2:
+        keys.add((str(stored[0]), str(stored[1])))
+    return keys
 
 
 def setup_resources_structure():
@@ -18,9 +38,9 @@ def setup_resources_structure():
 
     # 定义子文件夹和对应的说明内容
     subdirs = {
-        "characters": "角色肖像图文件夹\n\n此文件夹用于存放游戏角色的全身肖像图文件。\n\n获取方式：\n1. 访问库街区Wiki-角色列表页面\n   链接：https://wiki.kurobbs.com/mc/catalogue/list?fid=1099&sid=1105\n2. 点击每个角色进入详情页\n3. 拖动角色的全身肖像图到此文件夹\n4. 将图片重命名为角色名(如：今汐.webp)\n\n支持的格式：.webp\n\n重要提示：\n• 肖像图文件名必须与profile文件夹中的头像文件名完全一致\n• 这样切换头像时才能自动联动显示对应的肖像图\n\n请勿删除此文件夹。",
+        "characters": "角色立绘文件夹\n\n此文件夹存放角色全身立绘，由程序从库街区 Wiki 下载。\n\n使用方式：\n1. 点击主窗口左上角头像\n2. 点击「同步角色形象」\n\n图片保存为角色名.png，与头像使用同一个名字。\n已有同名图片不会被覆盖。\n\n请勿删除此文件夹。",
         "img": "界面背景图片文件夹\n\n此文件夹用于存放应用程序的背景图片文件。\n\n默认背景图片：\n• background-light.png - 浅色主题背景\n• background-dark.png - 深色主题背景\n\n支持的格式：.png, .jpg\n\n使用说明：\n• 替换这些文件可以自定义应用背景\n• 文件名必须保持一致才能被正确识别\n\n请勿删除此文件夹。",
-        "profile": "用户头像文件夹\n\n此文件夹用于存放用户选择的头像图片文件。\n\n获取方式：\n1. 访问库街区Wiki-角色头像页面\n   链接：https://wiki.kurobbs.com/mc/catalogue/list?fid=1099&sid=1363\n2. 直接拖动每个角色的头像图片到此文件夹\n3. 将图片重命名为角色名(如：今汐.png)\n\n支持的格式：.png\n\n重要提示：\n• 头像文件名必须与characters文件夹中的肖像图文件名完全一致\n• 在主窗口点击头像切换头像，会自动更新同角色肖像图\n\n请勿删除此文件夹。"
+        "profile": "角色头像文件夹\n\n此文件夹存放角色头像，由程序从库街区 Wiki 下载。\n\n使用方式：\n1. 点击主窗口左上角头像\n2. 点击「同步角色形象」\n\n图片保存为角色名.png，与立绘使用同一个名字。\n已有同名图片不会被覆盖。\n\n请勿删除此文件夹。"
     }
 
     # 检查并创建子文件夹和说明文件
@@ -207,8 +227,6 @@ class Config:
         # 直接定义属性，与模板保持一致
         self.current_user = ""
         self.users = {}
-        self.devcode = ""
-        self.token = ""
         self.theme = "light"
         self.auto_save = True
         self.use_background = True
@@ -224,18 +242,13 @@ class Config:
         }
 
         # GitHub仓库配置（用于更新检查）
-        self.github_owner = "shinobuwz"  # GitHub用户名
-        self.github_repo = "Wuthering-Waves-Achievement"  # 仓库名
+        self.github_owner = "LinyuJupiter"
+        self.github_repo = "Wuthering-Waves-Achievement"
 
         # 首次运行标记
         self.first_run = True  # 默认设为true，load_config时会检查
 
-        # 使用 QSettings 存储认证信息
-        from PySide6.QtCore import QSettings
-        self.settings = QSettings("WutheringWavesAchievement", "AuthData")
-
         self.load_config()
-        self._load_auth_from_settings()
 
     def load_config(self):
         """加载配置"""
@@ -263,7 +276,6 @@ class Config:
             # 确保目录存在
             self.config_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # 收集所有属性（不包括认证信息和内部配置）
             data = {
                 "current_user": self.current_user,
                 "users": self.users,
@@ -281,9 +293,6 @@ class Config:
 
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-
-            # 保存认证信息到 QSettings
-            self._save_auth_to_settings()
         except Exception as e:
             logger.error("保存配置失败: %s", e)
 
@@ -317,21 +326,6 @@ class Config:
     def get_users(self):
         """获取所有用户"""
         return self.users
-
-    def get_auth_data(self):
-        """获取当前认证数据"""
-        return self.devcode or "", self.token or ""
-
-    def _load_auth_from_settings(self):
-        """从 QSettings 加载认证信息"""
-        self.devcode = self.settings.value("devcode", "", str)
-        self.token = self.settings.value("token", "", str)
-
-    def _save_auth_to_settings(self):
-        """保存认证信息到 QSettings"""
-        self.settings.setValue("devcode", self.devcode)
-        self.settings.setValue("token", self.token)
-        self.settings.sync()  # 立即保存
 
     def set_user_avatar(self, username, avatar_path):
         """设置用户头像"""
@@ -387,6 +381,11 @@ class Config:
                     "是否隐藏": achievement.get("是否隐藏", "")
                 }
 
+                if achievement.get("同步键"):
+                    base_achievement["同步键"] = achievement.get("同步键")
+                if achievement.get("来源"):
+                    base_achievement["来源"] = achievement.get("来源")
+
                 # 添加成就组相关字段（如果有）
                 if achievement.get("成就组ID"):
                     base_achievement["成就组ID"] = achievement.get("成就组ID")
@@ -421,6 +420,80 @@ class Config:
         except Exception as e:
             logger.error("加载基础成就数据失败: %s", e)
             return []
+
+    def _overrides_path(self):
+        return get_resource_path("resources/achievement_overrides.json")
+
+    def load_achievement_overrides(self):
+        """读取用户删除过的 Wiki 成就键，避免同步时加回来。"""
+        path = self._overrides_path()
+        if not path.exists():
+            return {"suppressed_keys": []}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {"suppressed_keys": []}
+            keys = data.get("suppressed_keys", [])
+            if not isinstance(keys, list):
+                keys = []
+            data["suppressed_keys"] = keys
+            return data
+        except Exception as e:
+            logger.error("加载成就修正记录失败: %s", e)
+            return {"suppressed_keys": []}
+
+    def suppressed_key_set(self):
+        keys = set()
+        for item in self.load_achievement_overrides().get("suppressed_keys", []):
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                keys.add((str(item[0]), str(item[1])))
+        return keys
+
+    def suppress_achievement_keys(self, keys):
+        """记下用户删除的 Wiki 键，后续同步不再添加。"""
+        data = self.load_achievement_overrides()
+        stored = data.get("suppressed_keys", [])
+        existing = set()
+        for item in stored:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                existing.add((str(item[0]), str(item[1])))
+        for name, desc in keys:
+            pair = (str(name), str(desc))
+            if pair in existing or not pair[0]:
+                continue
+            stored.append([pair[0], pair[1]])
+            existing.add(pair)
+        data["suppressed_keys"] = stored
+        path = self._overrides_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            logger.error("保存成就修正记录失败: %s", e)
+            return False
+
+    def remove_achievement_from_all_progress(self, achievement_id):
+        """从所有用户进度中删除一条成就。"""
+        if not achievement_id:
+            return
+        for username, user_data in self.get_users().items():
+            uid = user_data.get('uid', username) if isinstance(user_data, dict) else username
+            progress_file = get_resource_path(f"resources/user_progress_{uid}.json")
+            if not progress_file.exists():
+                continue
+            try:
+                with open(progress_file, 'r', encoding='utf-8') as f:
+                    progress = json.load(f)
+                if not isinstance(progress, dict) or achievement_id not in progress:
+                    continue
+                progress.pop(achievement_id, None)
+                with open(progress_file, 'w', encoding='utf-8') as f:
+                    json.dump(progress, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.error("删除用户 %s 的成就进度失败: %s", username, e)
 
     def save_user_progress(self, username, progress_data):
         """保存用户进度数据"""

@@ -3,10 +3,10 @@
                                QDialogButtonBox, QFileDialog, QGroupBox, QCheckBox, QTableWidget,
                                QTableWidgetItem, QComboBox, QMessageBox)
 from PySide6.QtGui import QColor
-from PySide6.QtCore import Qt, Signal, QObject
-from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineUrlRequestInterceptor
+from PySide6.QtCore import Qt
+import ctypes
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -16,61 +16,6 @@ from core.signal_bus import signal_bus
 from core.styles import (get_dialog_style, get_settings_desc_style, get_button_style)
 from core.custom_message_box import CustomMessageBox
 from core.widgets import BackgroundWidget, load_background_image
-
-
-class AuthInterceptor(QWebEngineUrlRequestInterceptor):
-    """拦截 kurobbs 请求头中的 devcode 和 token"""
-    credentials_captured = Signal(str, str)  # (devcode, token)
-
-    def interceptRequest(self, info):
-        headers = {k.data(): v.data() for k, v in info.httpHeaders().items()}
-        devcode = headers.get(b"devcode", b"").decode("utf-8", errors="ignore")
-        token = headers.get(b"token", b"").decode("utf-8", errors="ignore")
-        logger.debug("[AuthInterceptor] url=%s devcode=%s token=%s",
-                     info.requestUrl().toString(),
-                     devcode[:8] + "..." if devcode else "(空)",
-                     token[:8] + "..." if token else "(空)")
-        if devcode and token:
-            logger.info("[AuthInterceptor] 成功捕获凭据 devcode=%s... token=%s...",
-                        devcode[:8], token[:8])
-            self.credentials_captured.emit(devcode, token)
-
-
-class BrowserAuthDialog(QDialog):
-    """内嵌浏览器，自动拦截 kurobbs devcode/token"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("自动获取认证信息 - 请在浏览器中登录库街区")
-        self.resize(1024, 700)
-        self.devcode = ""
-        self.token = ""
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        hint = QLabel("请在下方浏览器中完成登录，登录成功后将自动获取认证信息并关闭此窗口。")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        # 独立命名 profile，保持登录态
-        self._profile = QWebEngineProfile("kurobbs_auth", self)
-        self._interceptor = AuthInterceptor(self)
-        self._interceptor.credentials_captured.connect(self._on_captured)
-        self._profile.setUrlRequestInterceptor(self._interceptor)
-
-        self._view = QWebEngineView(self)
-        page_cls = self._view.page().__class__
-        from PySide6.QtWebEngineCore import QWebEnginePage
-        self._page = QWebEnginePage(self._profile, self)
-        self._view.setPage(self._page)
-        self._view.load("https://www.kurobbs.com/")
-        layout.addWidget(self._view)
-
-    def _on_captured(self, devcode, token):
-        self.devcode = devcode
-        self.token = token
-        self.accept()
 
 
 class TemplateSettingsDialog(QDialog):
@@ -95,6 +40,28 @@ class TemplateSettingsDialog(QDialog):
 
         self._init_ui()
         self._load_current_settings()
+
+    def showEvent(self, event):
+        """Windows 上无边框透明窗口首次显示时刷新命中区域，否则点不到控件。"""
+        super().showEvent(event)
+        if sys.platform != "win32":
+            return
+        hwnd = int(self.winId())
+        user32 = ctypes.windll.user32
+        user32.SetWindowPos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        user32.SetWindowPos.restype = ctypes.c_bool
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_NOZORDER = 0x0004
+        SWP_FRAMECHANGED = 0x0020
+        user32.SetWindowPos(
+            hwnd, None, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        )
 
     def _init_ui(self):
         """初始化UI"""
@@ -315,9 +282,8 @@ class TemplateSettingsDialog(QDialog):
 
         help_text = QLabel(
             "<h3>鸣潮成就管理器 - 使用帮助</h3>"
-            "<p><b>1. 通用认证信息设置</b></p>"
-            "<p style='margin-left: 20px;'>在使用爬虫功能前，需要先在<b>爬虫</b>标签页中设置通用认证信息（devcode 和 token）。"
-            "这些信息用于访问库街区Wiki API获取成就数据。</p>"
+            "<p><b>1. 成就数据获取</b></p>"
+            "<p style='margin-left: 20px;'>爬取库街区 Wiki 不需要登录，也不需要填写 DevCode 或 Token。</p>"
             
             "<p><b>2. 旧数据迁移指南</b></p>"
             "<p style='margin-left: 20px;'>如果您之前使用HTML版本的成就管理工具：<br>"
@@ -337,13 +303,13 @@ class TemplateSettingsDialog(QDialog):
             "<p><b>4. 爬虫使用说明</b></p>"
             "<p style='margin-left: 20px;'>爬虫功能<b>仅支持单个版本</b>的数据爬取。<br>"
             "使用步骤：<br>"
-            "① 在爬虫标签页设置通用认证信息<br>"
-            "② 选择要爬取的版本（如：2.9）<br>"
+            "① 打开数据爬取标签页<br>"
+            "② 输入要爬取的版本（如：2.9）<br>"
             "③ 点击开始爬取按钮<br>"
             "④ 等待爬取完成后保存数据<br><br>"
             "<b>缓存机制：</b><br>"
             "• 首次爬取时会将网页数据保存到本地缓存（resources/achievement_cache.json）<br>"
-            "• 下次爬取时会优先使用本地缓存，无需重新请求网络<br>"
+            "• 已有缓存时会比对远端更新时间，有变化才覆盖本地缓存<br>"
             "• 点击<b>清除缓存</b>按钮可删除本地缓存文件，下次爬取将重新获取最新数据<br>"
             "• 点击<b>打开WIKI</b>按钮可在浏览器中查看库街区Wiki成就页面</p>"
             
@@ -353,21 +319,8 @@ class TemplateSettingsDialog(QDialog):
             "• <b>长按</b>状态列（按住1秒）：切换为<span style='color: #e67e22;'>暂不可获取</span>状态<br>"
             "• 再次单击可恢复为未完成状态</p>"
             
-            "<p><b>6. 资源获取方式</b></p>"
-            "<p style='margin-left: 20px;'>如需添加更多角色头像和肖像图资源：</p>"
-            "<p style='margin-left: 40px;'><b>头像图片：</b><br>"
-            "① 访问 <a href='https://wiki.kurobbs.com/mc/catalogue/list?fid=1099&sid=1363' style='color: #3498db; text-decoration: underline;'>库街区Wiki-角色头像页面</a><br>"
-            "② 直接拖动每个角色的头像图片到 <code>resources\\profile</code> 文件夹<br>"
-            "③ 将图片重命名为角色名（如：今汐.png）<br>"
-            "<p style='margin-left: 20px;'><span style='color: #3498db;'><b>💡 提示：</b></span>"
-            "在主窗口点击头像切换头像，会自动更新同角色肖像图。</p>"
-            "<p style='margin-left: 40px;'><b>角色肖像图：</b><br>"
-            "① 访问 <a href='https://wiki.kurobbs.com/mc/catalogue/list?fid=1099&sid=1105' style='color: #3498db; text-decoration: underline;'>库街区Wiki-角色列表页面</a><br>"
-            "② 点击每个角色进入详情页<br>"
-            "③ 拖动角色的全身肖像图到 <code>resources\\characters</code> 文件夹<br>"
-            "④ 将图片重命名为角色名（如：今汐.webp）<br>"
-            "<p style='margin-left: 20px;'><span style='color: #3498db;'><b>💡 提示：</b></span>"
-            "头像和肖像图的文件名必须与角色名完全一致，这样切换头像时才能自动联动显示对应的肖像图。<s>缄默</s></p>"
+            "<p><b>6. 角色头像和立绘</b></p>"
+            "<p style='margin-left: 20px;'>点击主窗口左上角头像，再点击<b>同步角色形象</b>，即可从 Wiki 下载头像和立绘。已有同名图片不会被覆盖。</p>"
         )
         help_text.setWordWrap(True)
         help_text.setTextFormat(Qt.TextFormat.RichText)
@@ -404,17 +357,6 @@ class TemplateSettingsDialog(QDialog):
         self.use_background_checkbox.setChecked(config.use_background)
         self.custom_bg_light_edit.setText(config.custom_background_light)
         self.custom_bg_dark_edit.setText(config.custom_background_dark)
-        
-        # 通用认证设置
-        self.devcode_edit.setText(config.devcode)
-        self.token_edit.setText(config.token)
-
-    def _on_auto_fetch(self):
-        """打开内嵌浏览器自动获取 devcode/token"""
-        dlg = BrowserAuthDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.devcode_edit.setText(dlg.devcode)
-            self.token_edit.setText(dlg.token)
 
     def _save_settings(self):
         """保存设置"""
@@ -422,11 +364,7 @@ class TemplateSettingsDialog(QDialog):
         config.use_background = self.use_background_checkbox.isChecked()
         config.custom_background_light = self.custom_bg_light_edit.text()
         config.custom_background_dark = self.custom_bg_dark_edit.text()
-        
-        # 保存通用认证设置
-        config.devcode = self.devcode_edit.text().strip()
-        config.token = self.token_edit.text().strip()
-        
+
         # 保存分类配置
         self._save_category_config_silent()
         
@@ -438,8 +376,6 @@ class TemplateSettingsDialog(QDialog):
             'use_background': config.use_background,
             'custom_background_light': config.custom_background_light,
             'custom_background_dark': config.custom_background_dark,
-            'devcode': config.devcode,
-            'token': config.token,
             'theme': config.theme
         })
         
@@ -450,56 +386,6 @@ class TemplateSettingsDialog(QDialog):
         """创建用户管理标签页"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-
-        # 添加获取认证信息的提示
-        help_label = QLabel(
-            "📖 <b>如何获取认证信息：</b><br>"
-            "1. 访问库街区首页：<a href='https://www.kurobbs.com/' style='color: #0078d4;'>https://www.kurobbs.com/</a><br>"
-            "2. 登录后，按 <b>F12</b> 打开开发者工具（Developer Tools）<br>"
-            "3. 切换到 <b>网络</b>（Network）标签<br>"
-            "4. 刷新页面（F5 或 Ctrl+R）<br>"
-            "5. 在请求列表中找到名称为 <b>getConfig</b> 的请求<br>"
-            "6. 点击该请求，在右侧切换到标头标签，滚动查看 <b>请求标头</b>（Request Headers）<br>"
-            "7. 找到 <b>Devcode</b> 和 <b>Token</b> 字段，复制其值到下方输入框"
-        )
-        help_label.setWordWrap(True)
-        help_label.setOpenExternalLinks(True)  # 允许点击链接
-        help_label.setStyleSheet(get_settings_desc_style(config.theme))
-        layout.addWidget(help_label)
-
-        # 通用认证设置
-        auth_group = QGroupBox("通用认证设置")
-        auth_layout = QVBoxLayout(auth_group)
-
-        # DevCode输入
-        devcode_layout = QHBoxLayout()
-        devcode_layout.addWidget(QLabel("DevCode:"))
-        self.devcode_edit = QLineEdit()
-        self.devcode_edit.setPlaceholderText("输入DevCode")
-        self.devcode_edit.setText(config.devcode)
-        self.devcode_edit.setEchoMode(QLineEdit.EchoMode.Password)  # 密文显示
-        devcode_layout.addWidget(self.devcode_edit)
-        auth_layout.addLayout(devcode_layout)
-
-        # Token输入
-        token_layout = QHBoxLayout()
-        token_layout.addWidget(QLabel("Token:"))
-        self.token_edit = QLineEdit()
-        self.token_edit.setPlaceholderText("输入Token")
-        self.token_edit.setText(config.token)
-        self.token_edit.setEchoMode(QLineEdit.EchoMode.Password)  # 密文显示
-        token_layout.addWidget(self.token_edit)
-        auth_layout.addLayout(token_layout)
-
-        # 自动获取按钮
-        auto_fetch_layout = QHBoxLayout()
-        self.auto_fetch_btn = QPushButton("🔑 自动获取（内嵌浏览器登录）")
-        self.auto_fetch_btn.clicked.connect(self._on_auto_fetch)
-        auto_fetch_layout.addWidget(self.auto_fetch_btn)
-        auto_fetch_layout.addStretch()
-        auth_layout.addLayout(auto_fetch_layout)
-
-        layout.addWidget(auth_group)
 
         # 当前用户信息
         current_group = QGroupBox("当前用户")

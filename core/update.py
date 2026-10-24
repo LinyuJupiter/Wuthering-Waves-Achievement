@@ -210,6 +210,12 @@ class UpdateChecker:
             with open(self.cache_file, 'r', encoding='utf-8') as f:
                 cache_data = json.load(f)
             
+            expected_repo = f"{self.repo_owner}/{self.repo_name}"
+            cached_repo = cache_data.get('repository')
+            if cached_repo and cached_repo != expected_repo:
+                logger.info("更新缓存来自其他仓库（%s），重新检查", cached_repo)
+                return self._check_and_cache()
+
             update_info = cache_data.get('update_info', {})
             cached_current_version = update_info.get('current_version')
             cached_latest_version = update_info.get('latest_version')
