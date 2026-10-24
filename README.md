@@ -131,7 +131,8 @@ OCR 扫描功能可自动识别游戏内成就界面，将完成状态同步到�
 ## 致谢
 
 - **[onnxocr](https://github.com/jingsongliujing/onnxocr)**：基于 PaddleOCR 转 ONNX 的轻量本地 OCR 引擎，用于成就名称识别
-- **原项目 [zsh19961226](https://github.com/zsh19961226)**：本项目基于其早期版本完全重构
+- **原项目 [shinobuwz/Wuthering-Waves-Achievement](https://github.com/shinobuwz/Wuthering-Waves-Achievement)**：本项目在其 Python 早期版本上修改
+- **更早版本 [sliencezhang/Wuthering-Waves-Achievement](https://github.com/sliencezhang/Wuthering-Waves-Achievement)**：初始提交作者为 zsh19961226
 
 ## 许可证
 
